@@ -1,4 +1,5 @@
 import os
+import matplotlib.pyplot as plt
 from src.diffusion import HealPIXUNet, ContinuousVESchedule
 from paper.mpi.config import Config
 CACHE_DIR = "paper/mpi/cache"
@@ -29,9 +30,6 @@ model = HealPIXUNet(
     edges_to_healpix=edges_to_healpix,
     edges_to_latlon=edges_to_latlon
 )
-from paper.mpi.main import Denoiser
-denoiser = Denoiser(model, config.model.context_channels)
-denoiser = eqx.tree_deserialise_leaves(f"{CACHE_DIR}/weights_consistency_2.eqx", denoiser)
 
 # Load sigma max (LOAD THIS FILE)
 σmax = jnp.load(f"{CACHE_DIR}/σmax.npy")
@@ -45,22 +43,33 @@ _stats = jnp.load(f"{CACHE_DIR}/μ_σ.npz")
 # Pattern scaling (LOAD THIS FILE)
 β = jnp.load(f"{CACHE_DIR}/β.npy")
 
+# Initialize denoiser with preconditioning
+σ2 = σ_train[:-1]**2
+σdata2 = σ2.mean()
+σdata = jnp.sqrt(σdata2)  # 2.307688
+print("Using σdata = ", σdata)
+σmin = config.schedule.sigma_min
 
-# Initialize sampling function
-χtest = jr.PRNGKey(config.sampling.random_seed)
-output_size = (config.model.out_channels, config.model.input_size[1], config.model.input_size[2])
-generate_samples = partial(utils.draw_samples_batch_consistency,
-                            denoiser=denoiser,
-                            schedule=schedule,
-                            n_samples=5, # config.sampling.n_samples,
-                            n_steps=3,
-                            μ=μ_train, σ=σ_train,
-                            output_size=output_size)
+@eqx.filter_jit
+def c_skip(σ):
+    return σdata2 / ((σ - σmin)**2 + σdata2)
 
+@eqx.filter_jit
+def c_out(σ):
+    return σdata * (σ - σmin) / jnp.sqrt(σdata2 + σ**2)
 
+class Denoiser(eqx.Module):
+    unet: HealPIXUNet
+    ctx_size: int = eqx.field(static=True)
+    def __call__(self, x, σ):
+        return c_skip(σ) * (1 + σ) * x[:-self.ctx_size] + c_out(σ) * self.unet(x, σ)
+denoiser = Denoiser(model, config.model.context_channels)
+denoiser = eqx.tree_deserialise_leaves(f"{CACHE_DIR}/weights_consistency.eqx", denoiser)
 
 
 # Generate samples
+χtest = jr.PRNGKey(config.sampling.random_seed)
+output_size = (config.model.out_channels, config.model.input_size[1], config.model.input_size[2])
 ΔT = jnp.array([2.0]*12)
 months = jnp.array(range(12))
 β = einops.rearrange(β, 'm (l1 l2) i -> m l1 l2 i', l1=96)
@@ -73,8 +82,8 @@ pattern_batch = β[months, :, :, 0] + β[months, :, :, 1] * ΔT.reshape(-1, 1, 1
 import jax
 from typing import Tuple, Any, List
 
-key = jr.PRNGKey(10)
-n_steps = 2
+key = jr.PRNGKey(1)
+n_steps = 4
 
 
 pattern = pattern_batch[5]
@@ -82,25 +91,28 @@ context = utils.normalize(pattern, μ_train[-1], σ_train[-1])[None, ...]
 rho = 7
 t = jnp.linspace(0, 1, n_steps + 1)
 sigma_steps = (schedule.σmax**(1/rho) + t * (schedule.σmin**(1/rho) - schedule.σmax**(1/rho)))**rho
-# sigma_steps = sigma_steps[:-1]
+sigma_steps = sigma_steps[:-1]
 # sigma_steps = schedule.σ(schedule.get_timesteps(n_steps + 1))[1:]
 # sigma_steps = sigma_steps[::-1]
 
-
 init_key, *step_keys = jr.split(key, n_steps + 1)
 x = jr.normal(init_key, output_size) * schedule.σmax
+xs = [x[0]]
 
 for i in range(n_steps):
     σi = sigma_steps[i]
     x = denoiser(jnp.concatenate([x / (1 + σi), context], axis=0), σi)
+    xs.append(x[0])
     if i < n_steps - 1:
         σip1 = sigma_steps[i + 1]
-        x += jr.normal(step_keys[i], x.shape) * σip1
-# x = denoiser(jnp.concatenate([x / (1 + schedule.σmin), context], axis=0), schedule.σmin)
+        τi = jnp.sqrt(σip1**2 - schedule.σmin**2)
+        x += jr.normal(step_keys[i], x.shape) * τi
+        xs.append(x[0])
 
 x = utils.denormalize(x, μ_train[:-1], σ_train[:-1])
+# xs = [utils.denormalize(u,  μ_train[0], σ_train[0]) for u in xs]
 
-
+### stop reading here
 fig, axes = plt.subplots(2, 2, figsize=(12, 6))
 for i, ax in enumerate(axes.flat):
     vmax = jnp.abs(x[i]).max()
@@ -110,6 +122,20 @@ plt.tight_layout()
 plt.savefig("outputs/consistency_sample.jpg", dpi=300)
 plt.close()
 
+
+### stop reading here
+fig, axes = plt.subplots(1, len(xs), figsize=(25, 3))
+for i, ax in enumerate(axes.flat):
+    vmax = jnp.abs(xs[i]).max()
+    im = ax.imshow(xs[i], cmap="RdBu_r", vmin=-vmax, vmax=vmax, origin="lower")
+    ax.axis('off')
+    if i % 2 == 0:
+        ax.set_title(f"+ σ={sigma_steps[i // 2].item():.1f}")
+    else:
+        ax.set_title(f"Denoiser step {i // 2 + 1}")
+plt.tight_layout()
+plt.savefig("outputs/consistency_sample_process.jpg", dpi=300)
+plt.close()
 
 # n_plot = 50
 # sigma_ve = schedule.σ(schedule.get_timesteps(n_plot))[::-1]

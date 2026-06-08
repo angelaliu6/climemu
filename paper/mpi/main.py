@@ -9,14 +9,6 @@ from .trainer import train
 from .utils import load_or_compute_edges, print_parameter_count
 
 
-class Denoiser(eqx.Module):
-    unet: HealPIXUNet
-    ctx_size: int = eqx.field(static=True)
-    def __call__(self, x, σ):
-        def c_skip(σ): return 1 / (1 + σ**2)
-        def c_out(σ): return σ / jnp.sqrt(1 + σ**2)
-        return c_skip(σ) * x[:-self.ctx_size] + c_out(σ) * self.unet(x, σ)
-
 
 def main():
     """Main entry point for training the climate diffusion model.
@@ -87,7 +79,7 @@ def main():
         edges_path=config.model.edges_path
     )
 
-    # Initialize the UNet model for diffusion
+    # Initialize the UNet model with pre-trained diffusion weights
     model = HealPIXUNet(
         input_size=config.model.input_size,
         nside=config.model.nside,
@@ -100,23 +92,40 @@ def main():
         edges_to_latlon=edges_to_latlon
     )
     print_parameter_count(model)
+    model = eqx.tree_deserialise_leaves(config.training.model_filename, model)
+
     # Initialize denoiser with preconditioning
+    σ2 = σ_train[:-1]**2
+    σdata2 = σ2.mean()
+    σdata = jnp.sqrt(σdata2)  # 2.307688
+    print("Using σdata = ", σdata)
+    σmin = config.schedule.sigma_min
+
+    @eqx.filter_jit
+    def c_skip(σ):
+        return σdata2 / ((σ - σmin)**2 + σdata2)
+
+    @eqx.filter_jit
+    def c_out(σ):
+        return σdata * (σ - σmin) / jnp.sqrt(σdata2 + σ**2)
+
+    class Denoiser(eqx.Module):
+        unet: HealPIXUNet
+        ctx_size: int = eqx.field(static=True)
+        def __call__(self, x, σ):
+            return c_skip(σ) * (1 + σ) * x[:-self.ctx_size] + c_out(σ) * self.unet(x, σ)
+
     denoiser = Denoiser(model, config.model.context_channels)
-    
+        
     # Train the model
-    denoiser = eqx.tree_deserialise_leaves("weights.eqx", denoiser) ## for diffusion, started with 0 weights
     denoiser = train(denoiser, train_dataset, val_dataset, schedule, μ_train, σ_train, config)
     
     # Save the trained model
-    import os
-
-
     EXPERIMENT_DIR = os.path.dirname(__file__)
     CACHE_DIR = os.path.join(EXPERIMENT_DIR, "cache")
-    EXPERIMENT_NAME = os.path.basename(EXPERIMENT_DIR)
     os.makedirs(CACHE_DIR, exist_ok=True)
-    eqx.tree_serialise_leaves(os.path.join(CACHE_DIR, "weights_consistency_2.eqx"), denoiser) ## for diffusion, config.training.model_filename
-    print(f"Model saved to weights_consistency_2.eqx")    ## for diffusion, config.training.model_filename
+    eqx.tree_serialise_leaves(os.path.join(CACHE_DIR, "weights_consistency.eqx"), denoiser) ## for diffusion, config.training.model_filename
+    print(f"Model saved to weights_consistency.eqx")    ## for diffusion, config.training.model_filename
 
 
 if __name__ == "__main__":

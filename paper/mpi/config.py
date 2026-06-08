@@ -57,8 +57,8 @@ class TrainingConfig:
     learning_rate: float = 1e-4  # Adam optimizer learning rate
     ema_decay: float = 0.999  # Exponential moving average decay
     epochs: int = 5  # Number of training epochs, previously 5
-    log_interval: int = 10  # Steps at which to log training loss
-    sample_interval: int = 50  # Steps between sample generation
+    log_interval: int = 20  # Steps at which to log training loss
+    sample_interval: int = 10000  # Steps between sample generation
     queue_length: int = 30  # Length of sliding window for metrics
     sample_steps: int = 30  # Number of diffusion steps for sampling
     sample_count: int = 2  # Number of samples to generate, 10

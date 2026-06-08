@@ -120,7 +120,7 @@ def train_epoch(
             
             # Perform a single optimization step
             value, mse, model, χtrain, opt_state, grad_norm = difference_minimizing_make_step(   ## changed to new make_step function with iters_done
-                state.model, config.model.context_channels, schedule, x, jnp.array(state.step), χtrain, state.opt_state, optimizer.update
+                state.model, state.ema_model, config.model.context_channels, schedule, x, jnp.array(state.step), χtrain, state.opt_state, optimizer.update
             )
 
             # Update training state
@@ -138,29 +138,29 @@ def train_epoch(
             pbar.set_description(f"Epoch {state.epoch + 1} | Loss {round(running_loss, 2)}")
             _ = pbar.update(1)
   
-            # Log training metrics at specified intervals
-            if (state.step + 1) % config.training.log_interval == 0 or (state.step + 1) & state.step == 0:
-                log_training_metrics(config, state, running_loss, running_grad, running_mse, mapping_func(state.step, schedule.σmax), weighting_function(schedule.σmax, mapping_func(state.step, schedule.σmax)))
+            # # Log training metrics at specified intervals
+            # if (state.step + 1) % config.training.log_interval == 0 or (state.step + 1) & state.step == 0:
+            #     log_training_metrics(config, state, running_loss, running_grad, running_mse, mapping_func(state.step, schedule.σmax), weighting_function(schedule.σmax, mapping_func(state.step, schedule.σmax)))
 
-            # log validation metrics + samples at specified intervals
-            if (state.step + 1) % config.training.sample_interval == 0 or (state.step + 1) & state.step == 0:
-                log_validation_metrics(config, state, val_loader, μ, σ, schedule, χval)
-                _, χval = jr.split(χval)
+            # # log validation metrics + samples at specified intervals
+            # if (state.step + 1) % config.training.sample_interval == 0 or (state.step + 1) & state.step == 0:
+            #     log_validation_metrics(config, state, val_loader, μ, σ, schedule, χval)
+            #     _, χval = jr.split(χval)
 
-                # Generate samples from current model
-                pred_samples = log_sampler(model=ema_model, key=χtrain)
+            #     # Generate samples from current model
+            #     pred_samples = log_sampler(model=ema_model, key=χtrain)
 
-                # Log samples and metrics to wandb
-                utils.log_samples(pred_samples, log_target_data, config.data.variables, state.step)
+            #     # Log samples and metrics to wandb
+            #     utils.log_samples(pred_samples, log_target_data, config.data.variables, state.step)
 
     # Checkpoint weights
     if (state.epoch + 1) % config.training.checkpoint_interval == 0:
         eqx.tree_serialise_leaves(config.training.checkpoint_filename, state.ema_model)
 
-    # Log final metrics
-    σr = mapping_func(state.step, schedule.σmax)
-    log_training_metrics(config, state, running_loss, running_grad, running_mse, σr, weighting_function(schedule.σmax, σr))
-    log_validation_metrics(config, state, val_loader, μ, σ, schedule, χval)
+    # # Log final metrics
+    # σr = mapping_func(state.step, schedule.σmax)
+    # log_training_metrics(config, state, running_loss, running_grad, running_mse, σr, weighting_function(schedule.σmax, σr))
+    # log_validation_metrics(config, state, val_loader, μ, σ, schedule, χval)
 
     # Update epoch counter and return updated state
     return TrainingState(state.model, state.ema_model, state.opt_state, state.step, state.epoch + 1)

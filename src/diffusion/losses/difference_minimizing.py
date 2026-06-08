@@ -44,7 +44,7 @@ def weighting_function(σt, σr):
 iters = jnp.arange(1, 3e3)
 
 # %%
-def difference_minimizing_single_loss(model, ctx_size, x, σ, iters, key):
+def difference_minimizing_single_loss(model, ema_model, ctx_size, x, σ, iters, key):
     x0, ctx = x[:-ctx_size, ...], x[-ctx_size:, ...]
     # Get target noise level σr
     σr = mapping_func(iters, σ)
@@ -62,7 +62,7 @@ def difference_minimizing_single_loss(model, ctx_size, x, σ, iters, key):
 
     # Forward pass through denoiser
     denoised_x̃ = model(x̃_rescaled, σ)
-    denoised_x̃r = jax.lax.stop_gradient(model(x̃r_rescaled, σr))
+    denoised_x̃r = jax.lax.stop_gradient(ema_model(x̃r_rescaled, σr))
 
     # Compute loss with custom weighting
     c = 1e-3
@@ -74,13 +74,13 @@ def difference_minimizing_single_loss(model, ctx_size, x, σ, iters, key):
 
 # %%
 @eqx.filter_jit
-def difference_minimizing_batch_loss(model, ctx_size, schedule, x, iters, key):
+def difference_minimizing_batch_loss(model, ema_model, ctx_size, schedule, x, iters, key):
     batch_size = x.shape[0]
     χ1, χ2 = jr.split(key)
 
     # Vectorize single-sample loss over batch
     # in_axes: (None, 0, 0, None, 0) means vectorize over x, σ, and keys, but NOT ctx_size, iters
-    L = jax.vmap(partial(difference_minimizing_single_loss, model), in_axes=(None, 0, 0, None, 0))
+    L = jax.vmap(partial(difference_minimizing_single_loss, model, ema_model), in_axes=(None, 0, 0, None, 0))
 
     # Sample noise scales for each batch element
     keys = jr.split(χ1, batch_size)
@@ -93,13 +93,13 @@ def difference_minimizing_batch_loss(model, ctx_size, schedule, x, iters, key):
 
 
 @eqx.filter_jit
-def difference_minimizing_make_step(model, ctx_size, schedule, x, iters, key, opt_state, opt_update):
+def difference_minimizing_make_step(model, ema_model, ctx_size, schedule, x, iters, key, opt_state, opt_update):
     """
     Performs a single optimization step for difference minimizing
     """
     # Compute loss and gradients with respect to model parameters
     loss_function = eqx.filter_value_and_grad(difference_minimizing_batch_loss, has_aux=True)
-    (loss, mse), grads = loss_function(model, ctx_size, schedule, x, iters, key)
+    (loss, mse), grads = loss_function(model, ema_model, ctx_size, schedule, x, iters, key)
 
     # Compute gradient norm (for logging)
     grad_norm = compute_grad_norm(grads)
