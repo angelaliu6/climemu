@@ -148,11 +148,11 @@ def draw_samples_single_consistency(denoiser: eqx.Module, schedule: Any, pattern
     def _sample_one(key):
         init_key, *step_keys = jr.split(key, 1 + n_steps)
         x = jr.normal(init_key, output_size) * sigma_steps[-1]
-        for i in range(n_steps-1, -1, -1):
+        for i in range(n_steps):
             σ_i = sigma_steps[i]
             x = denoiser(jnp.concatenate([x / (1+σ_i**2)**0.5, context], axis=0), σ_i)
-            if i > 0:
-                x += jr.normal(step_keys[i-1], x.shape) * sigma_steps[i-1]
+            if i < n_steps-1:
+                x += jr.normal(step_keys[i+1], x.shape) * sigma_steps[i+1]
         return x
 
     keys = jr.split(key, n_samples)

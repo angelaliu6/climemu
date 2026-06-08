@@ -6,12 +6,12 @@ import os
 
 # Fill in measured values here 
 # (time based on 12 months, 2 samples per month; 
-# (fid based on June, reference within 0.5 of 2 degrees global warming, 3 samples (diffusion) or 20 samples (consistency))
+# (fid based on June, reference within 0.5 of 2 degrees global warming, 20 samples)
 results = [
     {"label": "Diffusion",             "fid": 279166.7319, "time_per_sample": 219.278},
     {"label": "Consistency (1 step)",  "fid": 399405.4669, "time_per_sample": 0.738},
-    {"label": "Consistency (2 steps)", "fid": 199130.1030, "time_per_sample": 1.428},
-    {"label": "Consistency (3 steps)", "fid": 194351.8878, "time_per_sample": 2.107},
+    {"label": "Consistency (2 steps)", "fid": 285865.6496, "time_per_sample": 1.428},
+    {"label": "Consistency (3 steps)", "fid": 264118.1996, "time_per_sample": 2.107},
     # {"label": "Consistency (4 steps)", "fid": 191507.1499, "time_per_sample": 0.825 on GPU},
 ]
 

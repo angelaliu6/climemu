@@ -72,7 +72,7 @@ generate_samples = partial(utils.draw_samples_batch_consistency,
                             schedule=schedule,
                             pattern_batch=pattern_batch,
                             n_samples=20,
-                            n_steps=1,
+                            n_steps=3,
                             μ=μ_train, σ=σ_train,
                             output_size=output_size,
                             key=χtest)
