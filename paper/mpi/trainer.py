@@ -12,9 +12,8 @@ from torch.utils.data import DataLoader
 import wandb
 
 from src.utils.collate import numpy_collate
-# from src.diffusion import denoising_make_step, denoising_batch_loss
-from src.diffusion import difference_minimizing_make_step, difference_minimizing_batch_loss
-from src.diffusion.losses.difference_minimizing import mapping_func, weighting_function
+from src.diffusion import ct_make_step, ct_batch_loss, compute_bins, compute_ema_decay
+from src.diffusion.losses.consistency_training import timesteps_to_times
 from src.datasets import PatternToCMIP6Dataset
 from paper.mpi.config import Config
 from . import utils
@@ -22,16 +21,6 @@ from . import utils
 
 @dataclass
 class TrainingState:
-    """State maintained during training.
-    
-    Tracks the model, optimizer state, and training progress.
-    
-    Attributes:
-        model: The current model parameters
-        opt_state: The optimizer state
-        step: Global step counter
-        epoch: Current epoch number
-    """
     model: eqx.Module
     ema_model: eqx.Module
     opt_state: optax.OptState
@@ -39,34 +28,34 @@ class TrainingState:
     epoch: int = 0
 
 
-def log_training_metrics(config, state, loss, grad, mse=None, σr_at_σmax=None, weighting_func=None):
-    metrics = {"Train Loss": loss, "Gradient norm": grad}
-    if mse is not None:
-        metrics["Unweighted MSE"] = mse
-    if σr_at_σmax is not None:
-        metrics["σr at σmax"] = float(σr_at_σmax)
-    if weighting_func is not None:
-        metrics["1/(σmax-σr)"] = float(weighting_func)
-    wandb.log(metrics, step=state.step)
+def log_training_metrics(state, loss, grad, mse, bins, ema_decay):
+    wandb.log({
+        "Train Loss": loss,
+        "Gradient norm": grad,
+        "Unweighted MSE": mse,
+        "Bins": int(bins),
+        "EMA decay": float(ema_decay),
+    }, step=state.step)
 
 
-def log_validation_metrics(config, state, val_loader, μ, σ, schedule, χval):
-    # Validation phase
+def log_validation_metrics(config, state, val_loader, μ, σ, total_steps, χval):
     val_loss = 0
     n_val_steps = len(val_loader)
-    with tqdm(total=n_val_steps, desc="Evaluation") as pbar:        
+    with tqdm(total=n_val_steps, desc="Evaluation") as pbar:
         for batch_idx, batch in enumerate(val_loader):
-            # Process batch and compute validation loss
             x = utils.process_batch(batch, μ, σ)
             _, χval = jr.split(χval)
-            val_value, _ = difference_minimizing_batch_loss(             ## changed to new batch_loss function with iters_done
-                state.ema_model, config.model.context_channels, schedule, x, jnp.array(state.step), χval
+            val_value, _ = ct_batch_loss(
+                state.ema_model, state.ema_model,
+                config.model.context_channels, x,
+                jnp.array(state.step), jnp.array(total_steps),
+                config.schedule.time_min, config.schedule.time_max,
+                config.training.bins_min, config.training.bins_max,
+                config.training.bins_rho, χval,
             )
             val_loss += val_value.item()
-            # Update progress bar
             pbar.set_description(f"Epoch {state.epoch + 1} | Val {round(val_loss / (batch_idx + 1), 2)}")
             pbar.update(1)
-    # Log validation loss
     wandb.log({"Validation Loss": val_loss / n_val_steps}, step=state.step)
 
 
@@ -74,95 +63,68 @@ def train_epoch(
     state: TrainingState,
     train_loader: DataLoader,
     val_loader: DataLoader,
-    schedule: object,
     μ: jnp.ndarray,
     σ: jnp.ndarray,
     log_sampler: callable,
     log_target_data: jnp.ndarray,
     config: Config,
-    optimizer: optax.GradientTransformation
+    optimizer: optax.GradientTransformation,
+    total_steps: int,
 ) -> TrainingState:
-    """Train for one epoch and evaluate.
-    
-    Performs a full training epoch followed by validation.
-    
-    Args:
-        state: Current training state
-        train_loader: DataLoader for training data
-        val_loader: DataLoader for validation data
-        schedule: Noise schedule for diffusion
-        μ: Mean for data normalization
-        σ: Standard deviation for data normalization
-        log_sampler: Sampling function for logging
-        log_target_data: Target data for visualization
-        config: Training configuration
-        optimizer: Optimization algorithm
-        
-    Returns:
-        Updated training state
-    """
-    # Initialize sliding windows for metrics
     loss_queue = deque(maxlen=config.training.queue_length)
     grad_queue = deque(maxlen=config.training.queue_length)
 
-    # Setup random keys for training and validation
     χtrain, χval = jr.split(jr.PRNGKey(state.epoch + 1))
-
-    # Calculate steps per epoch
     n_train_steps = len(train_loader)
 
-    # Training phase
     with tqdm(total=n_train_steps) as pbar:
         for batch in train_loader:
-            # Process batch and normalize
             x = utils.process_batch(batch, μ, σ)
             _, χtrain = jr.split(χtrain)
-            
-            # Perform a single optimization step
-            value, mse, model, χtrain, opt_state, grad_norm = difference_minimizing_make_step(   ## changed to new make_step function with iters_done
-                state.model, config.model.context_channels, schedule, x, jnp.array(state.step), χtrain, state.opt_state, optimizer.update
+
+            step_arr = jnp.array(state.step)
+            total_arr = jnp.array(total_steps)
+
+            value, mse, model, χtrain, opt_state, grad_norm = ct_make_step(
+                state.model, state.ema_model,
+                config.model.context_channels, x,
+                step_arr, total_arr,
+                config.schedule.time_min, config.schedule.time_max,
+                config.training.bins_min, config.training.bins_max,
+                config.training.bins_rho,
+                χtrain, state.opt_state, optimizer.update,
             )
 
-            # Update training state
-            ema_model = utils.update_ema(state.ema_model, model, config.training.ema_decay)
+            # Dynamic EMA decay (Philip's formula)
+            ema_decay = compute_ema_decay(
+                step_arr, total_arr,
+                config.training.bins_min,
+                config.training.initial_ema_decay,
+            )
+            ema_model = utils.update_ema(state.ema_model, model, ema_decay)
             state = TrainingState(model, ema_model, opt_state, state.step + 1, state.epoch)
-            
-            # Track metrics in sliding windows
+
             loss_queue.append(value.item())
             grad_queue.append(grad_norm.item())
             running_loss = sum(loss_queue) / len(loss_queue)
             running_grad = sum(grad_queue) / len(grad_queue)
-            running_mse = float(mse)
 
-            # Update progress bar
             pbar.set_description(f"Epoch {state.epoch + 1} | Loss {round(running_loss, 2)}")
-            _ = pbar.update(1)
-  
-            # Log training metrics at specified intervals
-            if (state.step + 1) % config.training.log_interval == 0 or (state.step + 1) & state.step == 0:
-                log_training_metrics(config, state, running_loss, running_grad, running_mse, mapping_func(state.step, schedule.σmax), weighting_function(schedule.σmax, mapping_func(state.step, schedule.σmax)))
+            pbar.update(1)
 
-            # log validation metrics + samples at specified intervals
-            if (state.step + 1) % config.training.sample_interval == 0 or (state.step + 1) & state.step == 0:
-                log_validation_metrics(config, state, val_loader, μ, σ, schedule, χval)
+            if (state.step + 1) % config.training.log_interval == 0:
+                bins = compute_bins(step_arr, total_arr, config.training.bins_min, config.training.bins_max)
+                log_training_metrics(state, running_loss, running_grad, float(mse), bins, ema_decay)
+
+            if (state.step + 1) % config.training.sample_interval == 0:
+                log_validation_metrics(config, state, val_loader, μ, σ, total_steps, χval)
                 _, χval = jr.split(χval)
-
-                # Generate samples from current model
                 pred_samples = log_sampler(model=ema_model, key=χtrain)
-
-                # Log samples and metrics to wandb
                 utils.log_samples(pred_samples, log_target_data, config.data.variables, state.step)
 
-    # Checkpoint weights
     if (state.epoch + 1) % config.training.checkpoint_interval == 0:
         eqx.tree_serialise_leaves(config.training.checkpoint_filename, state.ema_model)
 
-    # Log final metrics
-    σr = mapping_func(state.step, schedule.σmax)
-    log_training_metrics(config, state, running_loss, running_grad, running_mse, σr, weighting_function(schedule.σmax, σr))
-    log_validation_metrics(config, state, val_loader, μ, σ, schedule, χval)
-
-    # Update epoch counter and return updated state
     return TrainingState(state.model, state.ema_model, state.opt_state, state.step, state.epoch + 1)
 
 
@@ -173,82 +135,59 @@ def train(
     schedule: object,
     μ: jnp.ndarray,
     σ: jnp.ndarray,
-    config: Config
+    config: Config,
 ) -> eqx.Module:
-    """Train the model for the specified number of epochs.
-    
-    Orchestrates the full training process including initialization,
-    epoch iterations, and logging.
-    
-    Args:
-        model: Initial model
-        train_dataset: Training dataset
-        val_dataset: Validation dataset
-        schedule: Noise schedule for diffusion
-        μ: Mean for data normalization
-        σ: Standard deviation for data normalization
-        config: Training configuration
-        
-    Returns:
-        Trained model
-    """
-    # Setup optimizer
     optimizer = optax.chain(
         optax.clip_by_global_norm(50.0),
         optax.adam(learning_rate=config.training.learning_rate)
     )
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
-    
-    # Initialize training state
+
     ema_model = copy.deepcopy(model)
     state = TrainingState(model, ema_model, opt_state)
 
-    # Create data loaders with numpy collate function
     train_loader = DataLoader(
         train_dataset,
-        batch_size=config.training.batch_size, 
+        batch_size=config.training.batch_size,
         shuffle=True,
-        collate_fn=numpy_collate
+        collate_fn=numpy_collate,
     )
-
     val_loader = DataLoader(
         val_dataset,
         batch_size=config.training.batch_size,
-        collate_fn=numpy_collate
+        collate_fn=numpy_collate,
     )
 
-    # Get a single batch used visualization and metrics logging
+    total_steps = config.training.epochs * len(train_loader)
+
     log_pattern, log_target_data = utils.get_sample_batch(
         dataset=train_dataset,
         batch_size=16,
-        key=jr.PRNGKey(config.training.random_seed)
+        key=jr.PRNGKey(config.training.random_seed),
     )
     log_sampler = partial(
-        utils.draw_samples_batch,
+        utils.draw_samples_batch_consistency,
         schedule=schedule,
         pattern_batch=log_pattern,
         n_samples=config.training.sample_count,
-        n_steps=config.training.sample_steps,
+        n_steps=config.training.sample_steps_consistency,
         μ=μ,
         σ=σ,
-        output_size=(config.model.out_channels, config.model.input_size[1], config.model.input_size[2])
+        output_size=(config.model.out_channels, config.model.input_size[1], config.model.input_size[2]),
+        time_min=config.schedule.time_min,
+        time_max=config.schedule.time_max,
+        bins_rho=config.training.bins_rho,
     )
 
-    # Initialize wandb for experiment tracking
     wandb.init(project=config.training.wandb_project, config=config)
-
-    # Log initial context for reference
     utils.log_initial_context(log_pattern)
 
-    # Training loop - iterate through epochs
     for _ in range(config.training.epochs):
         state = train_epoch(
-            state, train_loader, val_loader, schedule,
-            μ, σ, log_sampler, log_target_data, config, optimizer
-        )    
-    
-    # Finish wandb run
+            state, train_loader, val_loader,
+            μ, σ, log_sampler, log_target_data,
+            config, optimizer, total_steps,
+        )
+
     wandb.finish()
-    
-    # Return the EMA trained model
     return state.ema_model

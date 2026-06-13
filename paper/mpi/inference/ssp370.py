@@ -77,7 +77,7 @@ def load_model_and_data(config: Config) -> Tuple[HealPIXUNet, PatternToCMIP6Data
         edges_to_healpix=edges_to_healpix,
         edges_to_latlon=edges_to_latlon
     )
-    denoiser = Denoiser(model, config.model.context_channels)
+    denoiser = Denoiser(model, config.model.context_channels, time_min=config.schedule.time_min, data_std=config.schedule.data_std)
     denoiser = eqx.tree_deserialise_leaves(config.training.consistency_model_filename, denoiser)
     return denoiser, test_dataset, μ_train, σ_train, σmax
 
@@ -128,7 +128,10 @@ def main():
                                n_samples=config.sampling.n_samples,
                                n_steps=1,
                                μ=μ_train, σ=σ_train,
-                               output_size=output_size)
+                               output_size=output_size,
+                               time_min=config.schedule.time_min,
+                               time_max=config.schedule.time_max,
+                               bins_rho=config.training.bins_rho)
 
     # Generate predictions
     pred_samples = []

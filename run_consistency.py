@@ -40,7 +40,7 @@ model = HealPIXUNet(
     edges_to_healpix=edges_to_healpix,
     edges_to_latlon=edges_to_latlon
 )
-denoiser = Denoiser(model, config.model.context_channels)
+denoiser = Denoiser(model, config.model.context_channels, time_min=config.schedule.time_min, data_std=config.schedule.data_std)
 denoiser = eqx.tree_deserialise_leaves(f"{CACHE_DIR}/weights_consistency.eqx", denoiser)
 
 # Load sigma max (LOAD THIS FILE)
@@ -75,6 +75,9 @@ generate_samples = partial(utils.draw_samples_batch_consistency,
                             n_steps=3,
                             μ=μ_train, σ=σ_train,
                             output_size=output_size,
+                            time_min=config.schedule.time_min,
+                            time_max=config.schedule.time_max,
+                            bins_rho=config.training.bins_rho,
                             key=χtest)
 
 # Generate samples with timing

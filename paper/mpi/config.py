@@ -55,7 +55,7 @@ class TrainingConfig:
     """
     batch_size: int = 32  # Number of samples per batch
     learning_rate: float = 1e-4  # Adam optimizer learning rate
-    ema_decay: float = 0.999  # Exponential moving average decay
+    ema_decay: float = 0.999  # Exponential moving average decay (used by old diff-min path)
     epochs: int = 5  # Number of training epochs
     log_interval: int = 10  # Steps at which to log training loss
     sample_interval: int = 50  # Steps between sample generation
@@ -69,6 +69,11 @@ class TrainingConfig:
     model_filename: str = os.path.join(CACHE_DIR, "weights.eqx")  # Output model filename
     consistency_model_filename: str = os.path.join(CACHE_DIR, "weights_consistency.eqx")
     wandb_project: str = EXPERIMENT_NAME  # Weights & Biases project name
+    # Philip CT hyperparameters
+    bins_min: int = 2              # Minimum number of time discretisation bins
+    bins_max: int = 150            # Maximum number of time discretisation bins
+    bins_rho: float = 7.0          # Karras schedule exponent
+    initial_ema_decay: float = 0.9 # Starting EMA decay (dynamic, tied to bins)
 
 
 @dataclass
@@ -79,6 +84,10 @@ class ScheduleConfig:
     """
     sigma_max: float = None  # Maximum noise level, if None then estimated from training data
     sigma_min: float = 1e-2  # Minimum noise level
+    # Philip CT time parameterisation (EDM-style)
+    time_min: float = 0.002  # Minimum noise time (analogous to sigma_min)
+    time_max: float = 80.0   # Maximum noise time (analogous to sigma_max)
+    data_std: float = 0.5    # σ_data for EDM preconditioning (c_skip / c_out)
 
 
 @dataclass

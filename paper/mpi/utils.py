@@ -134,25 +134,44 @@ def draw_samples_single(model: eqx.Module, schedule: Any, pattern: jnp.ndarray,
     return denormalize(samples, μ[:-1], σ[:-1])
 
 @eqx.filter_jit
-def draw_samples_single_consistency(denoiser: eqx.Module, schedule: Any, pattern: jnp.ndarray,
-                        n_samples: int, n_steps: int, μ: jnp.ndarray, σ: jnp.ndarray,
-                        output_size: Tuple, key: jr.PRNGKey = jr.PRNGKey(0)) -> jnp.ndarray:
-    """Draw samples for a given pattern using consistency model."""
+def draw_samples_single_consistency(
+    denoiser: eqx.Module, schedule: Any, pattern: jnp.ndarray,
+    n_samples: int, n_steps: int, μ: jnp.ndarray, σ: jnp.ndarray,
+    output_size: Tuple,
+    time_min: float = 0.002, time_max: float = 80.0, bins_rho: float = 7.0,
+    key: jr.PRNGKey = jr.PRNGKey(0),
+) -> jnp.ndarray:
+    """Draw samples using Philip's multi-step consistency sampler.
+
+    Step 1: denoise from t_max.
+    Steps 2+: re-noise to t_i then denoise (Philip's re-noising loop).
+    """
     context = normalize(pattern, μ[-1], σ[-1])[None, ...]
-    # sigma_steps = schedule.σ(schedule.get_timesteps(n_steps))
-    rho = 7
-    t = jnp.linspace(0, 1, n_steps + 1)
-    sigma_steps = (schedule.σmax**(1/rho) + t * (schedule.σmin**(1/rho) - schedule.σmax**(1/rho)))**rho
-    print(f'{sigma_steps=}')
-    
+    t_max = time_max
+    bins_max = 150
+
+    # Build intermediate times following Philip's reversed schedule
+    if n_steps > 1:
+        raw_indices = list(reversed(range(0, bins_max, bins_max // n_steps - 1)))[1:]
+        raw_indices = [i + bins_max // ((n_steps - 1) * 2) for i in raw_indices]
+        step_times = [
+            (
+                time_min ** (1.0 / bins_rho)
+                + idx / (bins_max - 1) * (time_max ** (1.0 / bins_rho) - time_min ** (1.0 / bins_rho))
+            ) ** bins_rho
+            for idx in raw_indices
+        ]
+    else:
+        step_times = []
+
     def _sample_one(key):
-        init_key, *step_keys = jr.split(key, 1 + n_steps)
-        x = jr.normal(init_key, output_size) * sigma_steps[-1]
-        for i in range(n_steps):
-            σ_i = sigma_steps[i]
-            x = denoiser(jnp.concatenate([x / (1+σ_i**2)**0.5, context], axis=0), σ_i)
-            if i < n_steps-1:
-                x += jr.normal(step_keys[i+1], x.shape) * sigma_steps[i+1]
+        init_key, *step_keys = jr.split(key, 1 + max(len(step_times), 1))
+        x = jr.normal(init_key, output_size) * t_max
+        x = denoiser(jnp.concatenate([x, context], axis=0), t_max)
+        for i, t in enumerate(step_times):
+            noise = jr.normal(step_keys[i], x.shape)
+            x = x + jnp.sqrt(jnp.maximum(t**2 - time_min**2, 0.0)) * noise
+            x = denoiser(jnp.concatenate([x, context], axis=0), t)
         return x
 
     keys = jr.split(key, n_samples)
@@ -174,17 +193,24 @@ def draw_samples_batch(model: eqx.Module, schedule: Any, pattern_batch: jnp.ndar
     return jax.vmap(Γ)(pattern=pattern_batch, key=keys)
 
 @eqx.filter_jit
-def draw_samples_batch_consistency(denoiser: eqx.Module, schedule: Any, pattern_batch: jnp.ndarray,
-                       n_samples: int, n_steps: int, μ: jnp.ndarray,
-                       σ: jnp.ndarray, output_size: Tuple, key: jr.PRNGKey = jr.PRNGKey(0)) -> jnp.ndarray:
-    """Draw samples for a batch of patterns."""
+def draw_samples_batch_consistency(
+    denoiser: eqx.Module, schedule: Any, pattern_batch: jnp.ndarray,
+    n_samples: int, n_steps: int, μ: jnp.ndarray, σ: jnp.ndarray,
+    output_size: Tuple,
+    time_min: float = 0.002, time_max: float = 80.0, bins_rho: float = 7.0,
+    key: jr.PRNGKey = jr.PRNGKey(0),
+) -> jnp.ndarray:
+    """Draw samples for a batch of patterns using Philip's consistency sampler."""
     keys = jr.split(key, pattern_batch.shape[0])
-    Γ = partial(draw_samples_single_consistency,
-                denoiser=denoiser,
-                schedule=schedule,
-                n_samples=n_samples,
-                n_steps=n_steps, μ=μ, σ=σ,
-                output_size=output_size)
+    Γ = partial(
+        draw_samples_single_consistency,
+        denoiser=denoiser,
+        schedule=schedule,
+        n_samples=n_samples,
+        n_steps=n_steps, μ=μ, σ=σ,
+        output_size=output_size,
+        time_min=time_min, time_max=time_max, bins_rho=bins_rho,
+    )
     return jax.vmap(Γ)(pattern=pattern_batch, key=keys)
 
 ################################################################################

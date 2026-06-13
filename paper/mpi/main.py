@@ -12,10 +12,16 @@ from .utils import load_or_compute_edges, print_parameter_count
 class Denoiser(eqx.Module):
     unet: HealPIXUNet
     ctx_size: int = eqx.field(static=True)
-    def __call__(self, x, σ):
-        def c_skip(σ): return 1 / jnp.sqrt(1 + σ**2)
-        def c_out(σ): return σ / jnp.sqrt(1 + σ**2)
-        return c_skip(σ) * x[:-self.ctx_size] + c_out(σ) * self.unet(x, σ)
+    time_min: float = eqx.field(static=True)
+    data_std: float = eqx.field(static=True)
+
+    def __call__(self, x, t):
+        # EDM-style preconditioning matching Philip's formulation
+        dt = t - self.time_min
+        denom = dt**2 + self.data_std**2
+        c_skip = self.data_std**2 / denom
+        c_out  = self.data_std * dt / jnp.sqrt(denom)
+        return c_skip * x[:-self.ctx_size] + c_out * self.unet(x, t)
 
 
 def main():
@@ -101,7 +107,12 @@ def main():
     )
     print_parameter_count(model)
     # Initialize denoiser with preconditioning
-    denoiser = Denoiser(model, config.model.context_channels)
+    denoiser = Denoiser(
+        model,
+        config.model.context_channels,
+        time_min=config.schedule.time_min,
+        data_std=config.schedule.data_std,
+    )
     
     # Train the model
     denoiser = eqx.tree_deserialise_leaves("weights.eqx", denoiser) ## for diffusion, started with 0 weights
