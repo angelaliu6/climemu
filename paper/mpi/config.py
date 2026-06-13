@@ -61,11 +61,13 @@ class TrainingConfig:
     sample_interval: int = 50  # Steps between sample generation
     queue_length: int = 30  # Length of sliding window for metrics
     sample_steps: int = 30  # Number of diffusion steps for sampling
+    sample_steps_consistency: int = 3  # Number of diffusion steps for sampling
     sample_count: int = 2  # Number of samples to generate, 10
     random_seed: int = 0  # Seed for reproducibility
     checkpoint_interval: int = 1  # Epochs between checkpoints
     checkpoint_filename: str = os.path.join(CACHE_DIR, "ckpt.eqx")  # Output checkpoint filename
     model_filename: str = os.path.join(CACHE_DIR, "weights.eqx")  # Output model filename
+    consistency_model_filename: str = os.path.join(CACHE_DIR, "weights_consistency.eqx")
     wandb_project: str = EXPERIMENT_NAME  # Weights & Biases project name
 
 

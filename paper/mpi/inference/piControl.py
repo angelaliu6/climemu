@@ -14,6 +14,7 @@ from src.diffusion import HealPIXUNet, ContinuousVESchedule
 
 from ..config import Config
 from ..data import load_dataset
+from ..main import Denoiser
 from .. import utils
 
 
@@ -68,8 +69,9 @@ def load_model_and_data(config: Config) -> Tuple[HealPIXUNet, jnp.ndarray, jnp.n
         edges_to_healpix=edges_to_healpix,
         edges_to_latlon=edges_to_latlon
     )
-    model = eqx.tree_deserialise_leaves(config.training.model_filename, model)
-    return model, β, lat, lon, μ_train, σ_train, σmax
+    denoiser = Denoiser(model, config.model.context_channels)
+    denoiser = eqx.tree_deserialise_leaves(config.training.checkpoint_filename, denoiser)
+    return denoiser, β, lat, lon, μ_train, σ_train, σmax
 
 
 
@@ -107,7 +109,7 @@ def save_predictions(
 def main():
     """Main function to run inference."""
     config = Config()
-    model, β, lat, lon, μ_train, σ_train, σmax = load_model_and_data(config)
+    denoiser, β, lat, lon, μ_train, σ_train, σmax = load_model_and_data(config)
 
     # Estimate standard deviation from piControl
     piControl = load_dataset(root=config.data.root_dir,
@@ -131,11 +133,11 @@ def main():
 
     # Initialize sampling function
     output_size = (config.model.out_channels, nlat, nlon)
-    generate_samples = partial(utils.draw_samples_batch,
-                               model=model,
+    generate_samples = partial(utils.draw_samples_batch_consistency,
+                               denoiser=denoiser,
                                schedule=schedule,
                                n_samples=1,
-                               n_steps=config.sampling.n_steps,
+                               n_steps=1,
                                μ=μ_train, σ=σ_train,
                                output_size=output_size)
 

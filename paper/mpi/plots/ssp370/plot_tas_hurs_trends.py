@@ -35,7 +35,7 @@ HSPACE = 0.01
 
 def load_land_fraction():
     """Load land fraction data for creating regional masks."""
-    land_fraction_filepath = "/home/shahineb/data/cmip6/raw/MPI-ESM1-2-LR/piControl/r1i1p1f1/sftlf/sftlf_fx_MPI-ESM1-2-LR_piControl_r1i1p1f1_gn.nc"
+    land_fraction_filepath = "/orcd/data/raffaele/001/shahineb/products/cmip6/raw/MPI-ESM1-2-LR/piControl/r1i1p1f1/sftlf/sftlf_fx_MPI-ESM1-2-LR_piControl_r1i1p1f1_gn.nc"
     land_fraction_ds = xr.open_dataset(land_fraction_filepath)['sftlf']
     return land_fraction_ds
 

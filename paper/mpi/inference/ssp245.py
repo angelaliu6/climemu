@@ -15,6 +15,7 @@ from src.datasets import PatternToCMIP6Dataset
 
 from ..config import Config
 from ..data import load_dataset
+from ..main import Denoiser
 from .. import utils
 
 
@@ -76,8 +77,9 @@ def load_model_and_data(config: Config) -> Tuple[HealPIXUNet, PatternToCMIP6Data
         edges_to_healpix=edges_to_healpix,
         edges_to_latlon=edges_to_latlon
     )
-    model = eqx.tree_deserialise_leaves(config.training.model_filename, model)
-    return model, test_dataset, μ_train, σ_train, σmax
+    denoiser = Denoiser(model, config.model.context_channels)
+    denoiser = eqx.tree_deserialise_leaves(config.training.consistency_model_filename, denoiser)
+    return denoiser, test_dataset, μ_train, σ_train, σmax
 
 
 
@@ -109,7 +111,7 @@ def save_predictions(
 def main():
     """Main function to run inference."""
     config = Config()
-    model, test_dataset, μ_train, σ_train, σmax = load_model_and_data(config)
+    denoiser, test_dataset, μ_train, σ_train, σmax = load_model_and_data(config)
 
     # Prepare data loader
     test_loader = make_dataloader(test_dataset, config.sampling.batch_size)
@@ -120,11 +122,11 @@ def main():
 
     # Initialize sampling function
     output_size = (config.model.out_channels, config.model.input_size[1], config.model.input_size[2])
-    generate_samples = partial(utils.draw_samples_batch,
-                               model=model,
+    generate_samples = partial(utils.draw_samples_batch_consistency,
+                               denoiser=denoiser,
                                schedule=schedule,
                                n_samples=config.sampling.n_samples,
-                               n_steps=config.sampling.n_steps,
+                               n_steps=1,
                                μ=μ_train, σ=σ_train,
                                output_size=output_size)
 

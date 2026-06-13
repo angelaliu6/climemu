@@ -9,7 +9,7 @@ from dask.diagnostics import ProgressBar
 from ...data import load_dataset
 
 # Module-level path configuration
-CLIMATOLOGY_ROOT = '/home/shahineb/data/cmip6/processed'
+CLIMATOLOGY_ROOT = '/orcd/data/raffaele/001/shahineb/products/cmip6/processed'
 CLIMATOLOGY_MODEL = 'MPI-ESM1-2-LR'
 CLIMATOLOGY_MEMBER = 'r1i1p1f1'
 
