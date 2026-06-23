@@ -13,6 +13,9 @@ results = [
     {"label": "Consistency (2 steps)", "fid": 285865.6496, "time_per_sample": 1.428},
     {"label": "Consistency (3 steps)", "fid": 264118.1996, "time_per_sample": 2.107},
     # {"label": "Consistency (4 steps)", "fid": 191507.1499, "time_per_sample": 0.825 on GPU},
+    {"label": "Consistency_P (1 step)",  "fid": 185474.0185, "time_per_sample": 0.432},  # on GPU
+    {"label": "Consistency_P (2 steps)", "fid": 187684.9620, "time_per_sample": 0.677},  # on GPU
+    {"label": "Consistency_P (3 steps)",  "fid": 182135.3972, "time_per_sample": 0.883},  # on GPU
 ]
 
 labels = [r["label"] for r in results]

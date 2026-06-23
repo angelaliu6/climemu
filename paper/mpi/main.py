@@ -84,6 +84,7 @@ def main():
     if config.schedule.sigma_max:
         sigma_max = config.schedule.sigma_max
     schedule = ContinuousVESchedule(config.schedule.sigma_min, sigma_max)
+    config.schedule.time_max = float(sigma_max)
 
     # Load or compute Latlon-HEALPix edges
     edges_to_healpix, edges_to_latlon = load_or_compute_edges(
@@ -126,8 +127,8 @@ def main():
     CACHE_DIR = os.path.join(EXPERIMENT_DIR, "cache")
     EXPERIMENT_NAME = os.path.basename(EXPERIMENT_DIR)
     os.makedirs(CACHE_DIR, exist_ok=True)
-    eqx.tree_serialise_leaves(os.path.join(CACHE_DIR, "weights_consistency.eqx"), denoiser) ## for diffusion, config.training.model_filename
-    print(f"Model saved to weights_consistency.eqx")    ## for diffusion, config.training.model_filename
+    eqx.tree_serialise_leaves(os.path.join(CACHE_DIR, "weights_consistency_P.eqx"), denoiser)
+    print(f"Model saved to weights_consistency_P.eqx")
 
 
 if __name__ == "__main__":

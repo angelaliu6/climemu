@@ -1,8 +1,10 @@
 import copy
+import os
 from collections import deque
 from functools import partial
 from dataclasses import dataclass
 
+import numpy as np
 import jax.numpy as jnp
 import jax.random as jr
 import equinox as eqx
@@ -26,6 +28,43 @@ class TrainingState:
     opt_state: optax.OptState
     step: int = 0
     epoch: int = 0
+
+
+def _ckpt_paths(base: str) -> dict:
+    stem = base[:-4] if base.endswith('.eqx') else base
+    return {
+        'model': stem + '_model.eqx',
+        'ema':   stem + '_ema.eqx',
+        'opt':   stem + '_opt.eqx',
+        'meta':  stem + '_meta.npz',
+    }
+
+
+def save_training_state(state: 'TrainingState', config: 'Config') -> None:
+    paths = _ckpt_paths(config.training.checkpoint_filename)
+    eqx.tree_serialise_leaves(paths['model'], state.model)
+    eqx.tree_serialise_leaves(paths['ema'],   state.ema_model)
+    eqx.tree_serialise_leaves(paths['opt'],   state.opt_state)
+    np.savez(paths['meta'], step=np.array(state.step), epoch=np.array(state.epoch))
+    print(f"Checkpoint saved at step {state.step}, epoch {state.epoch}")
+
+
+def load_training_state(
+    model: eqx.Module,
+    ema_model: eqx.Module,
+    opt_state: optax.OptState,
+    config: 'Config',
+) -> 'TrainingState | None':
+    paths = _ckpt_paths(config.training.checkpoint_filename)
+    if not all(os.path.exists(p) for p in paths.values()):
+        return None
+    model     = eqx.tree_deserialise_leaves(paths['model'], model)
+    ema_model = eqx.tree_deserialise_leaves(paths['ema'],   ema_model)
+    opt_state = eqx.tree_deserialise_leaves(paths['opt'],   opt_state)
+    meta      = np.load(paths['meta'])
+    step, epoch = int(meta['step']), int(meta['epoch'])
+    print(f"Resuming from checkpoint: step={step}, epoch={epoch}")
+    return TrainingState(model, ema_model, opt_state, step, epoch)
 
 
 def log_training_metrics(state, loss, grad, mse, bins, ema_decay):
@@ -119,13 +158,13 @@ def train_epoch(
             if (state.step + 1) % config.training.sample_interval == 0:
                 log_validation_metrics(config, state, val_loader, μ, σ, total_steps, χval)
                 _, χval = jr.split(χval)
-                pred_samples = log_sampler(model=ema_model, key=χtrain)
+                pred_samples = log_sampler(denoiser=ema_model, key=χtrain)
                 utils.log_samples(pred_samples, log_target_data, config.data.variables, state.step)
 
-    if (state.epoch + 1) % config.training.checkpoint_interval == 0:
-        eqx.tree_serialise_leaves(config.training.checkpoint_filename, state.ema_model)
-
-    return TrainingState(state.model, state.ema_model, state.opt_state, state.step, state.epoch + 1)
+    state = TrainingState(state.model, state.ema_model, state.opt_state, state.step, state.epoch + 1)
+    if state.epoch % config.training.checkpoint_interval == 0:
+        save_training_state(state, config)
+    return state
 
 
 def train(
@@ -144,7 +183,8 @@ def train(
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
     ema_model = copy.deepcopy(model)
-    state = TrainingState(model, ema_model, opt_state)
+    state = load_training_state(model, ema_model, opt_state, config) \
+        or TrainingState(model, ema_model, opt_state)
 
     train_loader = DataLoader(
         train_dataset,
@@ -182,7 +222,7 @@ def train(
     wandb.init(project=config.training.wandb_project, config=config)
     utils.log_initial_context(log_pattern)
 
-    for _ in range(config.training.epochs):
+    for _ in range(state.epoch, config.training.epochs):
         state = train_epoch(
             state, train_loader, val_loader,
             μ, σ, log_sampler, log_target_data,

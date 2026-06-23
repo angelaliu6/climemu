@@ -1,5 +1,7 @@
 import os
 import time
+import argparse
+import wandb
 from src.diffusion import HealPIXUNet, ContinuousVESchedule
 from paper.mpi.config import Config
 from paper.mpi.main import Denoiser
@@ -41,7 +43,7 @@ model = HealPIXUNet(
     edges_to_latlon=edges_to_latlon
 )
 denoiser = Denoiser(model, config.model.context_channels, time_min=config.schedule.time_min, data_std=config.schedule.data_std)
-denoiser = eqx.tree_deserialise_leaves(f"{CACHE_DIR}/weights_consistency.eqx", denoiser)
+denoiser = eqx.tree_deserialise_leaves(f"{CACHE_DIR}/ckpt.eqx", denoiser) #weights_consistency_P.eqx
 
 # Load sigma max (LOAD THIS FILE)
 σmax = jnp.load(f"{CACHE_DIR}/σmax.npy")
@@ -67,18 +69,24 @@ months = jnp.array([5])  # June only (0-indexed)
 assert β.shape == (12, 96, 192, 2)
 pattern_batch = β[months, :, :, 0] + β[months, :, :, 1] * ΔT.reshape(-1, 1, 1)
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--n_steps", type=int, default=2)
+args = parser.parse_args()
+n_steps = args.n_steps
 generate_samples = partial(utils.draw_samples_batch_consistency,
                             denoiser=denoiser,
                             schedule=schedule,
                             pattern_batch=pattern_batch,
                             n_samples=20,
-                            n_steps=3,
+                            n_steps=n_steps,
                             μ=μ_train, σ=σ_train,
                             output_size=output_size,
                             time_min=config.schedule.time_min,
-                            time_max=config.schedule.time_max,
+                            time_max=float(σmax),
                             bins_rho=config.training.bins_rho,
                             key=χtest)
+
+wandb.init(project=config.training.wandb_project, name=f"consistency_P_inference_steps{n_steps}", config={"n_steps": n_steps, "n_samples": 20, "ΔT": 2.0})
 
 # Generate samples with timing
 t0 = time.perf_counter()
@@ -208,9 +216,13 @@ for month in [5]:
     ax.set_ylabel("Latitude")
     plt.colorbar(im, ax=ax)
 
-    fig.suptitle(f"mean pred_samples[month {month}]", fontsize=14)
+    fig.suptitle(f"mean pred_samples[month {month}, steps {n_steps}]", fontsize=14)
     plt.tight_layout()
-    os.makedirs("outputs/consistency", exist_ok=True)
-    plt.savefig(f"outputs/consistency/pred_samples_{month}.png", dpi=150)
-    print(f"Saved outputs/consistency/pred_samples_{month}.png")
+    out_dir = f"outputs/consistency_P/steps_{n_steps}"
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = f"{out_dir}/pred_samples_{month}.png"
+    plt.savefig(out_path, dpi=150)
+    print(f"Saved {out_path}")
+    wandb.log({f"pred_samples/month_{month}": wandb.Image(fig)})
 
+wandb.finish()

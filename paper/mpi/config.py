@@ -35,7 +35,7 @@ class DataConfig:
     """
     root_dir: str = "/orcd/data/raffaele/001/shahineb/products/cmip6/processed"  # CMIP6 data directory
     model_name: str = "MPI-ESM1-2-LR"  # Climate model to use
-    train_experiments: List[str] = ("piControl", "ssp585")  # Training experiments
+    train_experiments: List[str] = ("historical", "piControl", "ssp126", "ssp585")  # Training experiments
     val_experiments: List[str] = ("1pctCO2",)  # Validation experiments
     variables: List[str] = ("tas", "pr", "hurs", "sfcWind")  # Climate variables
     val_time_slice: Tuple[str, str] = (None, None)  # Time range for validation
@@ -67,7 +67,7 @@ class TrainingConfig:
     checkpoint_interval: int = 1  # Epochs between checkpoints
     checkpoint_filename: str = os.path.join(CACHE_DIR, "ckpt.eqx")  # Output checkpoint filename
     model_filename: str = os.path.join(CACHE_DIR, "weights.eqx")  # Output model filename
-    consistency_model_filename: str = os.path.join(CACHE_DIR, "weights_consistency.eqx")
+    consistency_model_filename: str = os.path.join(CACHE_DIR, "ckpt.eqx")
     wandb_project: str = EXPERIMENT_NAME  # Weights & Biases project name
     # Philip CT hyperparameters
     bins_min: int = 2              # Minimum number of time discretisation bins
@@ -84,9 +84,9 @@ class ScheduleConfig:
     """
     sigma_max: float = None  # Maximum noise level, if None then estimated from training data
     sigma_min: float = 1e-2  # Minimum noise level
-    # Philip CT time parameterisation (EDM-style)
-    time_min: float = 0.002  # Minimum noise time (analogous to sigma_min)
-    time_max: float = 80.0   # Maximum noise time (analogous to sigma_max)
+    # Philip CT time parameterisation (EDM-style); time = sigma directly
+    time_min: float = 0.002  # Minimum noise time (= sigma_min)
+    time_max: float = 80.0   # Overridden at runtime by data-estimated sigma_max (main.py)
     data_std: float = 0.5    # σ_data for EDM preconditioning (c_skip / c_out)
 
 
