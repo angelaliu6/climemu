@@ -1,5 +1,5 @@
 import os
-from typing import Tuple, List, Iterator
+from typing import Iterator, List, Tuple
 
 import equinox as eqx
 import jax
@@ -7,65 +7,58 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 import xarray as xr
-from tqdm import tqdm
 from functools import partial
+from tqdm import tqdm
 
 from src.diffusion import HealPIXUNet, ContinuousVESchedule
 from src.datasets import PatternToCMIP6Dataset
 
 from ..config import Config
 from ..data import load_dataset
-from ..main import Denoiser
 from .. import utils
 
 
+DIFFUSION_OUTPUT_DIR = "/orcd/data/raffaele/001/shahineb/emulated/climemu/paper/mpi/outputs_diffusion"
+
+
 def make_dataloader(test_dataset: PatternToCMIP6Dataset, batch_size: int) -> Iterator[jnp.ndarray]:
-    gmst = test_dataset.gmst["ssp245"].ds['tas']
+    gmst = test_dataset.gmst["ssp370"].ds['tas']
     ΔT = jnp.array(gmst.values).flatten()
     months = jnp.asarray(gmst.time.dt.month.values)
 
-    def get_pattern_batch(gmst: jnp.ndarray, month: jnp.array) -> jnp.ndarray:
+    def get_pattern_batch(gmst: jnp.ndarray, month: jnp.ndarray) -> jnp.ndarray:
         x = jax.vmap(test_dataset.predict_single_pattern)(gmst, month)
         return x
 
     idx = jnp.arange(0, len(ΔT))
     idx = jnp.array_split(idx, len(ΔT) // batch_size)
     for batch_idx in idx:
-        gmst = ΔT[batch_idx]
+        gmst_batch = ΔT[batch_idx]
         m = months[batch_idx]
-        context = get_pattern_batch(gmst, m)
+        context = get_pattern_batch(gmst_batch, m)
         yield context
 
 
-def load_model_and_data(config: Config) -> Tuple[HealPIXUNet, PatternToCMIP6Dataset, jnp.ndarray, jnp.ndarray]:
-    """Load the trained model, test dataset, and normalization statistics."""
-    # Load pattern scaling coefficients and normalization statistics
-    β = jnp.load(config.data.pattern_scaling_path)  # shape: (12, n_lat * n_lon, 2)
+def load_model_and_data(config: Config) -> Tuple:
+    β = jnp.load(config.data.pattern_scaling_path)
     stats = jnp.load(config.data.norm_stats_path)
     μ_train, σ_train = jnp.array(stats['μ']), jnp.array(stats['σ'])
 
-    # Load test dataset
     test_dataset = load_dataset(
         root=config.data.root_dir,
         model=config.data.model_name,
-        experiments=["ssp245"],
+        experiments=["ssp370"],
         variables=config.data.variables,
         in_memory=config.data.in_memory,
         external_β=β
     )
-
-    # Load sigma max
     σmax = float(np.load(config.data.sigma_max_path))
 
-    # Load or compute Latlon-HEALPix edges
     edges_to_healpix, edges_to_latlon = utils.load_or_compute_edges(
         nside=config.model.nside,
-        lat=test_dataset.cmip6data.lat,
-        lon=test_dataset.cmip6data.lon,
         edges_path=config.model.edges_path
     )
 
-    # Initialize and load model
     model = HealPIXUNet(
         input_size=config.model.input_size,
         nside=config.model.nside,
@@ -77,21 +70,14 @@ def load_model_and_data(config: Config) -> Tuple[HealPIXUNet, PatternToCMIP6Data
         edges_to_healpix=edges_to_healpix,
         edges_to_latlon=edges_to_latlon
     )
-    denoiser = Denoiser(model, config.model.context_channels, time_min=config.schedule.time_min, data_std=config.schedule.data_std)
-    denoiser = eqx.tree_deserialise_leaves(config.training.consistency_model_filename, denoiser)
-    return denoiser, test_dataset, μ_train, σ_train, σmax
+    model = eqx.tree_deserialise_leaves(config.training.model_filename, model)
+    return model, test_dataset, μ_train, σ_train, σmax
 
 
-
-def save_predictions(
-    pred_samples: List[np.ndarray],
-    test_dataset: PatternToCMIP6Dataset,
-    output_dir: str,
-    variables: List[str]
-) -> None:
-    """Save predictions to a NetCDF file."""
+def save_predictions(pred_samples: List[np.ndarray], test_dataset: PatternToCMIP6Dataset,
+                     output_dir: str, variables: List[str]) -> None:
     os.makedirs(output_dir, exist_ok=True)
-    numpy_array = np.concatenate(pred_samples, axis=0)  # shape: (total_time, member, channel, lat, lon)
+    numpy_array = np.concatenate(pred_samples, axis=0)
     coords = dict(test_dataset.cmip6data.dtree.leaves[0].ds.coords)
     coords['time'] = coords['time'].isel(time=slice(0, numpy_array.shape[0]))
 
@@ -99,41 +85,29 @@ def save_predictions(
         var_name: (['time', 'member', 'lat', 'lon'], numpy_array[:, :, i, :, :])
         for i, var_name in enumerate(variables)
     }
-
-    # Save to NetCDF
     ds = xr.Dataset(data_vars=data_vars, coords=coords)
-    output_path = os.path.join(output_dir, "emulated_ssp245.nc")
+    output_path = os.path.join(output_dir, "emulated_ssp370.nc")
     ds.to_netcdf(output_path, mode='w')
     print(f"Predictions saved to {output_path}")
 
 
-
 def main():
-    """Main function to run inference."""
     config = Config()
-    denoiser, test_dataset, μ_train, σ_train, σmax = load_model_and_data(config)
+    model, test_dataset, μ_train, σ_train, σmax = load_model_and_data(config)
 
-    # Prepare data loader
     test_loader = make_dataloader(test_dataset, config.sampling.batch_size)
-
-    # Initialize noise schedule and random key
     schedule = ContinuousVESchedule(config.schedule.sigma_min, σmax)
     χtest = jr.PRNGKey(config.sampling.random_seed)
 
-    # Initialize sampling function
     output_size = (config.model.out_channels, config.model.input_size[1], config.model.input_size[2])
-    generate_samples = partial(utils.draw_samples_batch_consistency,
-                               denoiser=denoiser,
+    generate_samples = partial(utils.draw_samples_batch,
+                               model=model,
                                schedule=schedule,
                                n_samples=config.sampling.n_samples,
-                               n_steps=1,
+                               n_steps=config.sampling.n_steps,
                                μ=μ_train, σ=σ_train,
-                               output_size=output_size,
-                               time_min=config.schedule.time_min,
-                               time_max=σmax,
-                               bins_rho=config.training.bins_rho)
+                               output_size=output_size)
 
-    # Generate predictions
     pred_samples = []
     n_batch = len(test_dataset.gmst.leaves[0].time) // config.sampling.batch_size
     with tqdm(total=n_batch) as pbar:
@@ -142,23 +116,11 @@ def main():
             pred_samples.append(jax.device_get(batch_pred_samples))
             χtest, _ = jr.split(χtest)
 
-            # Save ensemble periodically
             if (batch_idx + 1) % 10 == 0:
-                save_predictions(
-                    pred_samples,
-                    test_dataset,
-                    config.sampling.output_dir,
-                    config.data.variables
-                )
+                save_predictions(pred_samples, test_dataset, DIFFUSION_OUTPUT_DIR, config.data.variables)
             _ = pbar.update(1)
 
-    # Save final version
-    save_predictions(
-        pred_samples,
-        test_dataset,
-        config.sampling.output_dir,
-        config.data.variables
-    )
+    save_predictions(pred_samples, test_dataset, DIFFUSION_OUTPUT_DIR, config.data.variables)
 
 
 if __name__ == "__main__":

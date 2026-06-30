@@ -80,9 +80,9 @@ def main():
         sigma_max_path=config.data.sigma_max_path
     )
 
-    # Setup noise schedule for the diffusion process
-    if config.schedule.sigma_max:
-        sigma_max = config.schedule.sigma_max
+    # # Setup noise schedule for the diffusion process
+    # if config.schedule.sigma_max:
+    #     sigma_max = config.schedule.sigma_max
     schedule = ContinuousVESchedule(config.schedule.sigma_min, sigma_max)
     config.schedule.time_max = float(sigma_max)
 

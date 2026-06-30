@@ -141,37 +141,25 @@ def draw_samples_single_consistency(
     time_min: float = 0.002, time_max: float = 80.0, bins_rho: float = 7.0,
     key: jr.PRNGKey = jr.PRNGKey(0),
 ) -> jnp.ndarray:
-    """Draw samples using Philip's multi-step consistency sampler.
+    """Draw samples using multi-step consistency sampling.
 
-    Step 1: denoise from t_max.
-    Steps 2+: re-noise to t_i then denoise (Philip's re-noising loop).
+    Uses a Karras schedule with n_steps+1 levels evenly spaced in sigma^(1/rho)
+    from time_max down to time_min. Each step denoises at the current level then
+    re-noises to the next (lower) level. n_steps=1 is a single denoising call.
     """
     context = normalize(pattern, μ[-1], σ[-1])[None, ...]
-    t_max = time_max
-    bins_max = 150
 
-    # Build intermediate times following Philip's reversed schedule
-    if n_steps > 1:
-        raw_indices = list(reversed(range(0, bins_max, bins_max // n_steps - 1)))[1:]
-        raw_indices = [i + bins_max // ((n_steps - 1) * 2) for i in raw_indices]
-        step_times = [
-            (
-                time_min ** (1.0 / bins_rho)
-                + idx / (bins_max - 1) * (time_max ** (1.0 / bins_rho) - time_min ** (1.0 / bins_rho))
-            ) ** bins_rho
-            for idx in raw_indices
-        ]
-    else:
-        step_times = []
+    t = jnp.linspace(0, 1, n_steps + 1)
+    sigma_steps = (time_max ** (1.0 / bins_rho) + t * (time_min ** (1.0 / bins_rho) - time_max ** (1.0 / bins_rho))) ** bins_rho
+    # sigma_steps[0] = time_max, sigma_steps[-1] ≈ time_min
 
     def _sample_one(key):
-        init_key, *step_keys = jr.split(key, 1 + max(len(step_times), 1))
-        x = jr.normal(init_key, output_size) * t_max
-        x = denoiser(jnp.concatenate([x, context], axis=0), t_max)
-        for i, t in enumerate(step_times):
-            noise = jr.normal(step_keys[i], x.shape)
-            x = x + jnp.sqrt(jnp.maximum(t**2 - time_min**2, 0.0)) * noise
-            x = denoiser(jnp.concatenate([x, context], axis=0), t)
+        init_key, *step_keys = jr.split(key, 1 + n_steps)
+        x = jr.normal(init_key, output_size) * sigma_steps[0]
+        for i in range(n_steps):
+            x = denoiser(jnp.concatenate([x, context], axis=0), sigma_steps[i])
+            if i < n_steps - 1:
+                x = x + jr.normal(step_keys[i], x.shape) * sigma_steps[i + 1]
         return x
 
     keys = jr.split(key, n_samples)

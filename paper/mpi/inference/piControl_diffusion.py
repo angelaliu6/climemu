@@ -1,5 +1,5 @@
 import os
-from typing import Tuple, List, Iterator
+from typing import Iterator, List, Tuple
 
 import equinox as eqx
 import jax
@@ -7,16 +7,17 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 import xarray as xr
-from tqdm import tqdm
 from functools import partial
+from tqdm import tqdm
 
 from src.diffusion import HealPIXUNet, ContinuousVESchedule
 
 from ..config import Config
 from ..data import load_dataset
-from ..main import Denoiser
 from .. import utils
 
+
+DIFFUSION_OUTPUT_DIR = "/orcd/data/raffaele/001/shahineb/emulated/climemu/paper/mpi/outputs_diffusion"
 
 
 def make_dataloader(n_year: int, β: jnp.ndarray, σpiControl: float, key: jr.PRNGKey, nlat: int, nlon: int) -> Iterator[jnp.ndarray]:
@@ -28,15 +29,11 @@ def make_dataloader(n_year: int, β: jnp.ndarray, σpiControl: float, key: jr.PR
         yield context
 
 
-
-def load_model_and_data(config: Config) -> Tuple[HealPIXUNet, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, float]:
-    """Load the trained model, normalization stats, and σmax. Returns (model, β, lat, lon, μ, σ, σmax)."""
-    # Load pattern scaling coefficients and normalization statistics
-    β = jnp.load(config.data.pattern_scaling_path)  # shape: (12, n_lat * n_lon, 2)
+def load_model_and_data(config: Config) -> Tuple:
+    β = jnp.load(config.data.pattern_scaling_path)
     stats = jnp.load(config.data.norm_stats_path)
     μ_train, σ_train = jnp.array(stats['μ']), jnp.array(stats['σ'])
 
-    # Load dummy dataset for coordinates
     test_dataset = load_dataset(
         root=config.data.root_dir,
         model=config.data.model_name,
@@ -47,17 +44,13 @@ def load_model_and_data(config: Config) -> Tuple[HealPIXUNet, jnp.ndarray, jnp.n
     )
     lat = test_dataset.cmip6data.lat
     lon = test_dataset.cmip6data.lon
-
-    # Load sigma max
     σmax = float(np.load(config.data.sigma_max_path))
 
-    # Load or compute Latlon-HEALPix edges
     edges_to_healpix, edges_to_latlon = utils.load_or_compute_edges(
         nside=config.model.nside,
         edges_path=config.model.edges_path
     )
 
-    # Initialize and load model
     model = HealPIXUNet(
         input_size=config.model.input_size,
         nside=config.model.nside,
@@ -69,22 +62,13 @@ def load_model_and_data(config: Config) -> Tuple[HealPIXUNet, jnp.ndarray, jnp.n
         edges_to_healpix=edges_to_healpix,
         edges_to_latlon=edges_to_latlon
     )
-    denoiser = Denoiser(model, config.model.context_channels, time_min=config.schedule.time_min, data_std=config.schedule.data_std)
-    denoiser = eqx.tree_deserialise_leaves(config.training.checkpoint_filename, denoiser)
-    return denoiser, β, lat, lon, μ_train, σ_train, σmax
+    model = eqx.tree_deserialise_leaves(config.training.model_filename, model)
+    return model, β, lat, lon, μ_train, σ_train, σmax
 
 
-
-def save_predictions(
-    pred_samples: List[np.ndarray],
-    lat: jnp.array,
-    lon: jnp.array,
-    output_dir: str,
-    variables: List[str]
-) -> None:
-    """Save predictions to a NetCDF file."""
+def save_predictions(pred_samples: List[np.ndarray], lat, lon, output_dir: str, variables: List[str]) -> None:
     os.makedirs(output_dir, exist_ok=True)
-    numpy_array = np.concatenate(pred_samples, axis=1)  # shape: (total_time, member, channel, lat, lon)
+    numpy_array = np.concatenate(pred_samples, axis=1)
     n_year = numpy_array.shape[1]
     da = xr.DataArray(
         numpy_array,
@@ -98,20 +82,15 @@ def save_predictions(
         }
     )
     ds = da.to_dataset(dim="variable")
-
-    # Save to NetCDF
     output_path = os.path.join(output_dir, "emulated_piControl.nc")
     ds.to_netcdf(output_path, mode='w')
     print(f"Predictions saved to {output_path}")
 
 
-
 def main():
-    """Main function to run inference."""
     config = Config()
-    denoiser, β, lat, lon, μ_train, σ_train, σmax = load_model_and_data(config)
+    model, β, lat, lon, μ_train, σ_train, σmax = load_model_and_data(config)
 
-    # Estimate standard deviation from piControl
     piControl = load_dataset(root=config.data.root_dir,
                              model=config.data.model_name,
                              experiments=["piControl"],
@@ -121,30 +100,23 @@ def main():
     σpiControl = piControl.gmst['piControl']['tas'].std().item()
     print("σpiControl = ", σpiControl)
 
-    # Prepare data loader
     n_year = 1000
     key = jr.PRNGKey(0)
     nlat, nlon = config.model.input_size[1], config.model.input_size[2]
     test_loader = make_dataloader(n_year, β, σpiControl, key, nlat, nlon)
 
-    # Initialize noise schedule and random key
     schedule = ContinuousVESchedule(config.schedule.sigma_min, σmax)
     χtest = jr.PRNGKey(config.sampling.random_seed)
 
-    # Initialize sampling function
     output_size = (config.model.out_channels, nlat, nlon)
-    generate_samples = partial(utils.draw_samples_batch_consistency,
-                               denoiser=denoiser,
+    generate_samples = partial(utils.draw_samples_batch,
+                               model=model,
                                schedule=schedule,
                                n_samples=1,
-                               n_steps=1,
+                               n_steps=config.sampling.n_steps,
                                μ=μ_train, σ=σ_train,
-                               output_size=output_size,
-                               time_min=config.schedule.time_min,
-                               time_max=σmax,
-                               bins_rho=config.training.bins_rho)
+                               output_size=output_size)
 
-    # Generate predictions
     pred_samples = []
     with tqdm(total=n_year) as pbar:
         for batch_idx, pattern_batch in enumerate(test_loader):
@@ -152,23 +124,11 @@ def main():
             pred_samples.append(jax.device_get(batch_pred_samples))
             χtest, _ = jr.split(χtest)
 
-            # Save ensemble periodically
             if (batch_idx + 1) % 100 == 0:
-                save_predictions(
-                    pred_samples,
-                    lat, lon,
-                    config.sampling.output_dir,
-                    config.data.variables
-                )
+                save_predictions(pred_samples, lat, lon, DIFFUSION_OUTPUT_DIR, config.data.variables)
             _ = pbar.update(1)
 
-    # Save final version
-    save_predictions(
-        pred_samples,
-        lat, lon,
-        config.sampling.output_dir,
-        config.data.variables
-    )
+    save_predictions(pred_samples, lat, lon, DIFFUSION_OUTPUT_DIR, config.data.variables)
 
 
 if __name__ == "__main__":

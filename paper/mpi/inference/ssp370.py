@@ -130,7 +130,7 @@ def main():
                                μ=μ_train, σ=σ_train,
                                output_size=output_size,
                                time_min=config.schedule.time_min,
-                               time_max=config.schedule.time_max,
+                               time_max=σmax,
                                bins_rho=config.training.bins_rho)
 
     # Generate predictions
