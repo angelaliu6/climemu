@@ -39,17 +39,4 @@ samples = emulator(gmst=2,       # GMST anomaly wrt piControl (°C)
 :warning: _Default model files for usage are trained on the full set of Tier I SSP simulations. To reproduce the paper results follow [instructions](paper/README.md)_.
 
 
-
-## Citing
-```bibtex
-@article{bouabid2026score,
-  title={Score-based generative emulation of impact-relevant Earth system model outputs},
-  author={Bouabid, Shahine and Souza, Andre Nogueira and Ferrari, Raffaele},
-  journal={Journal of Advances in Modeling Earth Systems},
-  volume={18},
-  number={3},
-  pages={e2025MS005558},
-  year={2026},
-  publisher={Wiley Online Library}
-}
 ```
