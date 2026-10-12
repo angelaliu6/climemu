@@ -18,25 +18,27 @@ Code tested on Python ≥3.11. GPU support is required for practical usage. Inst
 
 
 ## Usage
-[![Demo](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/shahineb/climemu/blob/main/examples/collab-demo.ipynb)
+  [![Demo](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/shahineb/climemu/blob/ma
+  in/examples/collab-demo.ipynb)
 
-```python
-import climemu
+  ```python
+  import climemu
 
-# Instantiate emulator
-emulator = climemu.build_emulator("MPI-ESM1-2-LR")
+  # Instantiate emulator
+  emulator = climemu.build_emulator("MPI-ESM1-2-LR")
 
-# Download pretrained weights and compile (~1min)
-emulator.load()
-emulator.compile(n_samples=5)   # Nb of samples generated at each function call
+  # Download pretrained weights and compile (~1min)
+  emulator.load()
+  emulator.compile(n_samples=5,   # Nb of samples generated at each function call
+                   n_steps=30)    # Nb of sampler steps (optional, default 30)
 
-# Generate 5 samples for a given gmst and month
-samples = emulator(gmst=2,       # GMST anomaly wrt piControl (°C)
-                   month=3,      # Month index (1-12)
-                   seed=0,       # Random seed
-                   xarray=True)  # Return xr.Dataset
-```
-:warning: _Default model files for usage are trained on the full set of Tier I SSP simulations. To reproduce the paper results follow [instructions](paper/README.md)_.
-
+  # Generate 5 samples for a given gmst and month
+  samples = emulator(gmst=2,       # GMST anomaly wrt piControl (°C)
+                     month=3,      # Month index (1-12)
+                     seed=1,       # Random seed (omit for a random one)
+                     xarray=True)  # Return xr.Dataset
+  ```
+:warning: _Default model files for usage are trained on the full set of Tier I SSP simulations. To reproduce the results of the 
+  original paper (Bouabid et al.), follow [instructions](paper/README.md)_.
 
 ```
